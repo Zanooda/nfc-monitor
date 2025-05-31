@@ -40,9 +40,7 @@ func (r *Reader) monitor(wg *sync.WaitGroup) {
 		}
 
 		log.Printf("[%s] Device initialized as initiator", r.name)
-
-		// For pn71xx driver, we need to continuously try to select targets
-		// The driver handles tag detection internally via callbacks
+		
 		r.pollTargets(dev)
 		dev.Close()
 		time.Sleep(1 * time.Second)
@@ -61,54 +59,69 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 	log.Printf("[%s] Starting polling loop", r.name)
 
 	for {
-		// The pn71xx driver works differently - it uses callbacks internally
-		// We need to continuously check for tags using select_passive_target
+		// Track currently seen tags
+		currentTags := make(map[string]bool)
+
+		// Try each modulation type
 		for _, mod := range modulations {
-			target, err := dev.InitiatorSelectPassiveTarget(mod, nil)
-			if err != nil {
-				// This is normal when no tag is present
-				continue
-			}
-
-			if target != nil {
-				uid := r.getUID(target)
-				if uid != "" {
-					r.mu.Lock()
-					wasNew := !r.active[uid]
-					r.active[uid] = true
-					r.mu.Unlock()
-
-					if wasNew {
-						fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
-							r.name, uid, r.getTargetType(target))
-						r.printTargetInfo(target)
+			// Use recover to handle any panics from the library
+			func() {
+				defer func() {
+					if err := recover(); err != nil {
+						// Silently ignore panics - the pn71xx driver might return incompatible data
 					}
+				}()
 
-					// Keep checking if tag is still present
-					for {
-						time.Sleep(200 * time.Millisecond)
+				// Try listing passive targets
+				targets, err := dev.InitiatorListPassiveTargets(mod)
+				if err != nil {
+					return
+				}
+
+				// Process found targets
+				for _, target := range targets {
+					uid := r.getUID(target)
+					if uid != "" {
+						currentTags[uid] = true
 						
-						// Try to select the same tag again
-						stillThere, _ := dev.InitiatorSelectPassiveTarget(mod, nil)
-						if stillThere == nil {
-							// Tag is gone
-							r.mu.Lock()
-							delete(r.active, uid)
+						r.mu.Lock()
+						if !r.active[uid] {
+							r.active[uid] = true
 							r.mu.Unlock()
-							fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
-							break
+							
+							fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
+								r.name, uid, r.getTargetType(target))
+							r.printTargetInfo(target)
+						} else {
+							r.mu.Unlock()
 						}
 					}
 				}
+			}()
+		}
+
+		// Check for departed tags
+		r.mu.Lock()
+		for uid := range r.active {
+			if !currentTags[uid] {
+				delete(r.active, uid)
+				fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
 			}
 		}
-		
+		r.mu.Unlock()
+
 		// Small delay between polling cycles
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
 func (r *Reader) getUID(target nfc.Target) string {
+	defer func() {
+		if err := recover(); err != nil {
+			// Return empty string if we can't get UID
+		}
+	}()
+
 	switch t := target.(type) {
 	case *nfc.ISO14443aTarget:
 		return fmt.Sprintf("%X", t.UID)
@@ -143,6 +156,12 @@ func (r *Reader) getTargetType(target nfc.Target) string {
 }
 
 func (r *Reader) printTargetInfo(target nfc.Target) {
+	defer func() {
+		if err := recover(); err != nil {
+			// Ignore errors in printing
+		}
+	}()
+
 	switch t := target.(type) {
 	case *nfc.ISO14443aTarget:
 		fmt.Printf("  ATQA: %04X\n", t.Atqa)
