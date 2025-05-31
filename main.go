@@ -39,9 +39,10 @@ func (r *Reader) monitor(wg *sync.WaitGroup) {
 			continue
 		}
 
-		// Device initialized successfully
 		log.Printf("[%s] Device initialized as initiator", r.name)
 
+		// For pn71xx driver, we need to continuously try to select targets
+		// The driver handles tag detection internally via callbacks
 		r.pollTargets(dev)
 		dev.Close()
 		time.Sleep(1 * time.Second)
@@ -55,56 +56,55 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 		{Type: nfc.Felica, BaudRate: nfc.Nbr212},
 		{Type: nfc.Felica, BaudRate: nfc.Nbr424},
 		{Type: nfc.Jewel, BaudRate: nfc.Nbr106},
-		{Type: nfc.ISO14443biClass, BaudRate: nfc.Nbr106},
 	}
 
 	log.Printf("[%s] Starting polling loop", r.name)
 
-	// Use a simple polling loop similar to the C example
 	for {
-		// Try InitiatorPollTarget with parameters similar to the C example
-		n, target, err := dev.InitiatorPollTarget(modulations, 20, 2*150*time.Millisecond)
-		
-		if err != nil {
-			// Only log non-timeout errors
-			if err.Error() != "timeout" && err.Error() != "RF Transmission Error" {
-				log.Printf("[%s] Poll error: %v", r.name, err)
-			}
-			continue
-		}
-
-		if n > 0 && target != nil {
-			uid := r.getUID(target)
-			if uid == "" {
+		// The pn71xx driver works differently - it uses callbacks internally
+		// We need to continuously check for tags using select_passive_target
+		for _, mod := range modulations {
+			target, err := dev.InitiatorSelectPassiveTarget(mod, nil)
+			if err != nil {
+				// This is normal when no tag is present
 				continue
 			}
 
-			// Tag arrived
-			r.mu.Lock()
-			wasNew := !r.active[uid]
-			r.active[uid] = true
-			r.mu.Unlock()
-
-			if wasNew {
-				fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
-					r.name, uid, r.getTargetType(target))
-				r.printTargetInfo(target)
-			}
-
-			// Check if tag is still present
-			for {
-				time.Sleep(100 * time.Millisecond)
-				err := dev.InitiatorTargetIsPresent(nil)
-				if err != nil {
-					// Tag departed
+			if target != nil {
+				uid := r.getUID(target)
+				if uid != "" {
 					r.mu.Lock()
-					delete(r.active, uid)
+					wasNew := !r.active[uid]
+					r.active[uid] = true
 					r.mu.Unlock()
-					fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
-					break
+
+					if wasNew {
+						fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
+							r.name, uid, r.getTargetType(target))
+						r.printTargetInfo(target)
+					}
+
+					// Keep checking if tag is still present
+					for {
+						time.Sleep(200 * time.Millisecond)
+						
+						// Try to select the same tag again
+						stillThere, _ := dev.InitiatorSelectPassiveTarget(mod, nil)
+						if stillThere == nil {
+							// Tag is gone
+							r.mu.Lock()
+							delete(r.active, uid)
+							r.mu.Unlock()
+							fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
+							break
+						}
+					}
 				}
 			}
 		}
+		
+		// Small delay between polling cycles
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
