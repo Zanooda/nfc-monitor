@@ -39,6 +39,10 @@ func (r *Reader) monitor(wg *sync.WaitGroup) {
 			continue
 		}
 
+		// Try to get device info
+		deviceName := dev.Name()
+		log.Printf("[%s] Device name: %s", r.name, deviceName)
+
 		r.pollTargets(dev)
 		dev.Close()
 		time.Sleep(1 * time.Second)
@@ -55,40 +59,50 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 		{Type: nfc.ISO14443biClass, BaudRate: nfc.Nbr106},
 	}
 
-	pollCount := 20
-	period := 300 * time.Millisecond // 2 * 150ms
+	log.Printf("[%s] Starting polling loop", r.name)
 
+	// Use a simple polling loop similar to the C example
 	for {
-		n, target, err := dev.InitiatorPollTarget(modulations, pollCount, period)
+		// Try InitiatorPollTarget with parameters similar to the C example
+		n, target, err := dev.InitiatorPollTarget(modulations, 20, 2*150*time.Millisecond)
+		
 		if err != nil {
-			log.Printf("[%s] Poll error: %v", r.name, err)
-			time.Sleep(100 * time.Millisecond)
+			// Only log non-timeout errors
+			if err.Error() != "timeout" && err.Error() != "RF Transmission Error" {
+				log.Printf("[%s] Poll error: %v", r.name, err)
+			}
 			continue
 		}
 
 		if n > 0 && target != nil {
 			uid := r.getUID(target)
-			if uid != "" {
-				r.mu.Lock()
-				if !r.active[uid] {
-					r.active[uid] = true
-					fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
-						r.name, uid, r.getTargetType(target))
-					r.printTargetInfo(target)
-				}
-				r.mu.Unlock()
+			if uid == "" {
+				continue
+			}
 
-				// Wait for tag removal
-				for {
-					err := dev.InitiatorTargetIsPresent(target)
-					if err != nil {
-						r.mu.Lock()
-						delete(r.active, uid)
-						r.mu.Unlock()
-						fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
+			// Tag arrived
+			r.mu.Lock()
+			wasNew := !r.active[uid]
+			r.active[uid] = true
+			r.mu.Unlock()
+
+			if wasNew {
+				fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
+					r.name, uid, r.getTargetType(target))
+				r.printTargetInfo(target)
+			}
+
+			// Check if tag is still present
+			for {
+				time.Sleep(100 * time.Millisecond)
+				err := dev.InitiatorTargetIsPresent(nil)
+				if err != nil {
+					// Tag departed
+					r.mu.Lock()
+					delete(r.active, uid)
+					r.mu.Unlock()
+					fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
+					break
 				}
 			}
 		}
@@ -151,27 +165,16 @@ func (r *Reader) printTargetInfo(target nfc.Target) {
 func main() {
 	fmt.Println("NFC Monitor starting...")
 
-	// First, list available devices
-	devices, err := nfc.ListDevices()
-	if err != nil {
-		log.Printf("Failed to list devices: %v", err)
-	} else {
-		fmt.Printf("Found %d NFC devices:\n", len(devices))
-		for i, dev := range devices {
-			fmt.Printf("  [%d] %s\n", i, dev)
-		}
-	}
-
 	// Use pn71xx driver for the PN7150 chips
 	reader1 := &Reader{
-		name:   "Reader 1",
+		name:   "Reader 1", 
 		device: "pn71xx:/dev/pn5xx_i2c0",
 		active: make(map[string]bool),
 	}
 
 	reader2 := &Reader{
 		name:   "Reader 2",
-		device: "pn71xx:/dev/pn5xx_i2c1",
+		device: "pn71xx:/dev/pn5xx_i2c1", 
 		active: make(map[string]bool),
 	}
 
