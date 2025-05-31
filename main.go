@@ -55,40 +55,45 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 		{Type: nfc.ISO14443biClass, BaudRate: nfc.Nbr106},
 	}
 
+	pollCount := byte(20)
+	period := byte(2)
+
 	for {
-		for _, mod := range modulations {
-			targets, err := dev.InitiatorListPassiveTargets(mod)
-			if err != nil {
-				continue
+		target, err := dev.InitiatorPollTarget(modulations, pollCount, period)
+		if err != nil {
+			if err.Error() != "no target found" {
+				log.Printf("[%s] Poll error: %v", r.name, err)
 			}
-
-			r.mu.Lock()
-			currentTags := make(map[string]bool)
-
-			for _, target := range targets {
-				uid := r.getUID(target)
-				if uid != "" {
-					currentTags[uid] = true
-					if !r.active[uid] {
-						r.active[uid] = true
-						fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
-							r.name, uid, r.getTargetType(target))
-						r.printTargetInfo(target)
-					}
-				}
-			}
-
-			for uid := range r.active {
-				if !currentTags[uid] {
-					delete(r.active, uid)
-					fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
-				}
-			}
-
-			r.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		if target != nil {
+			uid := r.getUID(target)
+			if uid != "" {
+				r.mu.Lock()
+				if !r.active[uid] {
+					r.active[uid] = true
+					fmt.Printf("[%s] TAG ARRIVED - UID: %s, Type: %s\n", 
+						r.name, uid, r.getTargetType(target))
+					r.printTargetInfo(target)
+				}
+				r.mu.Unlock()
+
+				// Wait for tag removal
+				for {
+					present, err := dev.InitiatorTargetIsPresent(target)
+					if err != nil || !present {
+						r.mu.Lock()
+						delete(r.active, uid)
+						r.mu.Unlock()
+						fmt.Printf("[%s] TAG DEPARTED - UID: %s\n", r.name, uid)
+						break
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+		}
 	}
 }
 
@@ -148,7 +153,18 @@ func (r *Reader) printTargetInfo(target nfc.Target) {
 func main() {
 	fmt.Println("NFC Monitor starting...")
 
-	// Try different connection string formats
+	// First, list available devices
+	devices, err := nfc.ListDevices()
+	if err != nil {
+		log.Printf("Failed to list devices: %v", err)
+	} else {
+		fmt.Printf("Found %d NFC devices:\n", len(devices))
+		for i, dev := range devices {
+			fmt.Printf("  [%d] %s\n", i, dev)
+		}
+	}
+
+	// Use pn71xx driver for the PN7150 chips
 	reader1 := &Reader{
 		name:   "Reader 1",
 		device: "pn71xx:/dev/pn5xx_i2c0",
