@@ -55,20 +55,18 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 		{Type: nfc.ISO14443biClass, BaudRate: nfc.Nbr106},
 	}
 
-	pollCount := byte(20)
-	period := byte(2)
+	pollCount := 20
+	period := 300 * time.Millisecond // 2 * 150ms
 
 	for {
-		target, err := dev.InitiatorPollTarget(modulations, pollCount, period)
+		n, target, err := dev.InitiatorPollTarget(modulations, pollCount, period)
 		if err != nil {
-			if err.Error() != "no target found" {
-				log.Printf("[%s] Poll error: %v", r.name, err)
-			}
+			log.Printf("[%s] Poll error: %v", r.name, err)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
-		if target != nil {
+		if n > 0 && target != nil {
 			uid := r.getUID(target)
 			if uid != "" {
 				r.mu.Lock()
@@ -82,8 +80,8 @@ func (r *Reader) pollTargets(dev nfc.Device) {
 
 				// Wait for tag removal
 				for {
-					present, err := dev.InitiatorTargetIsPresent(target)
-					if err != nil || !present {
+					err := dev.InitiatorTargetIsPresent(target)
+					if err != nil {
 						r.mu.Lock()
 						delete(r.active, uid)
 						r.mu.Unlock()
