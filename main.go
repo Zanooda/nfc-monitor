@@ -148,27 +148,16 @@ func (r *Reader) printTargetInfo(target nfc.Target) {
 func main() {
 	fmt.Println("NFC Monitor starting...")
 
-	// First, list available devices
-	devices, err := nfc.ListDevices()
-	if err != nil {
-		log.Printf("Failed to list devices: %v", err)
-	} else {
-		fmt.Printf("Found %d NFC devices:\n", len(devices))
-		for i, dev := range devices {
-			fmt.Printf("  [%d] %s\n", i, dev)
-		}
-	}
-
 	// Try different connection string formats
 	reader1 := &Reader{
 		name:   "Reader 1",
-		device: "pn532_i2c:/dev/pn5xx_i2c0",
+		device: "pn71xx:/dev/pn5xx_i2c0",
 		active: make(map[string]bool),
 	}
 
 	reader2 := &Reader{
 		name:   "Reader 2",
-		device: "pn532_i2c:/dev/pn5xx_i2c1",
+		device: "pn71xx:/dev/pn5xx_i2c1",
 		active: make(map[string]bool),
 	}
 
