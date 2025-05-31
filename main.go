@@ -39,9 +39,8 @@ func (r *Reader) monitor(wg *sync.WaitGroup) {
 			continue
 		}
 
-		// Try to get device info
-		deviceName := dev.Name()
-		log.Printf("[%s] Device name: %s", r.name, deviceName)
+		// Device initialized successfully
+		log.Printf("[%s] Device initialized as initiator", r.name)
 
 		r.pollTargets(dev)
 		dev.Close()
